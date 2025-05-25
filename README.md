@@ -132,6 +132,30 @@ if (hostInfo != null) {
 **4. Basic Error Handling:**
 API calls throw `IOException` for network issues or Zabbix API errors (e.g., authentication failure, invalid parameters). The `ZabbixApiSyncClient` includes details from the Zabbix API error response in the exception message.
 
+**5. Using with a Pre-existing Token:**
+
+If you already have a valid Zabbix authentication token, you can instantiate the client directly with it:
+
+```java
+// (Inside SyncClientExample or similar)
+String existingAuthToken = "your_pre_existing_zabbix_auth_token";
+ZabbixApiSyncClient apiClientWithToken = new ZabbixApiSyncClient("http://your-zabbix-server/api_jsonrpc.php", existingAuthToken);
+
+// IMPORTANT: Do NOT call apiClientWithToken.authenticate(username, password) when using this constructor.
+
+try {
+    JsonNode hostInfo = apiClientWithToken.getHost("Zabbix server");
+    if (hostInfo != null) {
+        System.out.println("Host found using token: " + hostInfo.toString());
+    } else {
+        System.out.println("Host not found using token.");
+    }
+} catch (IOException e) {
+    System.err.println("API request with token failed: " + e.getMessage());
+    // e.printStackTrace();
+}
+```
+
 ### Zabbix API Async Client (`ZabbixApiAsyncClient`)
 
 **1. Instantiate the client:**
@@ -217,6 +241,41 @@ public static void getHostExample(ZabbixApiAsyncClient client, String hostNameTo
 
 **4. Basic Error Handling with `CompletableFuture`:**
 Use `whenComplete` or `handle` on the `CompletableFuture` to process results or exceptions. Exceptions are typically wrapped in `ExecutionException` if you call `future.get()`, or passed directly to the `exception` parameter in `whenComplete`.
+
+**5. Using with a Pre-existing Token:**
+
+If you already have a valid Zabbix authentication token, you can instantiate the client directly with it:
+
+```java
+// (Inside AsyncClientExample or similar main structure)
+String existingAuthToken = "your_pre_existing_zabbix_auth_token";
+ZabbixApiAsyncClient asyncApiClientWithToken = new ZabbixApiAsyncClient("http://your-zabbix-server/api_jsonrpc.php", existingAuthToken);
+
+// IMPORTANT: Do NOT call asyncApiClientWithToken.authenticateAsync(username, password) 
+// when using this constructor. It will result in a CompletableFuture that completes exceptionally.
+
+CompletableFuture<JsonNode> hostFuture = asyncApiClientWithToken.getHostAsync("Zabbix server");
+
+hostFuture.whenComplete((hostInfo, ex) -> {
+    if (ex != null) {
+        System.err.println("Async getHost with token failed: " + ex.getMessage());
+        // ex.printStackTrace();
+        return;
+    }
+    if (hostInfo != null) {
+        System.out.println("Async Host (with token) Found: " + hostInfo.toString());
+    } else {
+        System.out.println("Async Host (with token) not found.");
+    }
+});
+
+// Keep the main thread alive for async operations to complete in this example
+try {
+    Thread.sleep(2000); // Adjust as needed
+} catch (InterruptedException e) {
+    Thread.currentThread().interrupt();
+}
+```
 
 ### Zabbix Sender Client (`ZabbixSenderClient`)
 

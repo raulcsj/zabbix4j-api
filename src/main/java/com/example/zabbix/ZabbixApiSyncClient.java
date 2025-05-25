@@ -9,6 +9,7 @@ import java.util.Objects;
 
 /**
  * Synchronous client for interacting with the Zabbix API.
+ * This client supports authentication via username/password or by providing a pre-configured authentication token.
  */
 public class ZabbixApiSyncClient {
 
@@ -16,27 +17,55 @@ public class ZabbixApiSyncClient {
     private final OkHttpClient httpClient;
     private final ObjectMapper objectMapper;
     private String authToken;
+    private String preConfiguredAuthToken; // Field for pre-configured token
 
     /**
-     * Constructs a new ZabbixApiSyncClient.
+     * Constructs a new ZabbixApiSyncClient with the specified API URL.
+     * After construction, {@link #authenticate(String, String)} must be called to obtain an
+     * authentication token before making other API requests.
      *
-     * @param apiUrl The URL of the Zabbix API (e.g., "http://your-zabbix-server/api_jsonrpc.php").
+     * @param apiUrl The URL of the Zabbix API (e.g., "http://your-zabbix-server/api_jsonrpc.php"). Cannot be null.
      */
     public ZabbixApiSyncClient(String apiUrl) {
+        Objects.requireNonNull(apiUrl, "API URL cannot be null");
         this.apiUrl = apiUrl;
         this.httpClient = new OkHttpClient();
         this.objectMapper = new ObjectMapper();
+        this.preConfiguredAuthToken = null;
+    }
+
+    /**
+     * Constructs a new ZabbixApiSyncClient with the specified API URL and a pre-configured authentication token.
+     * Using this constructor, the client is immediately ready to make authenticated API requests.
+     * Calling {@link #authenticate(String, String)} on a client constructed this way will result in an {@link IllegalStateException}.
+     *
+     * @param apiUrl The URL of the Zabbix API (e.g., "http://your-zabbix-server/api_jsonrpc.php"). Cannot be null.
+     * @param token The pre-configured Zabbix authentication token. Cannot be null or empty.
+     */
+    public ZabbixApiSyncClient(String apiUrl, String token) {
+        Objects.requireNonNull(apiUrl, "API URL cannot be null");
+        Objects.requireNonNull(token, "Authentication token cannot be null");
+        this.apiUrl = apiUrl;
+        this.httpClient = new OkHttpClient();
+        this.objectMapper = new ObjectMapper();
+        this.preConfiguredAuthToken = token;
+        this.authToken = token; // Use the pre-configured token directly
     }
 
     /**
      * Authenticates with the Zabbix API using the provided username and password.
-     * The authentication token is stored for subsequent requests.
+     * The authentication token is stored internally for subsequent requests.
+     * This method should not be called if the client was constructed with a pre-configured authentication token.
      *
-     * @param username The Zabbix username.
-     * @param password The Zabbix password.
-     * @throws IOException If a network error occurs or the API returns an error.
+     * @param username The Zabbix username. Cannot be null.
+     * @param password The Zabbix password. Cannot be null.
+     * @throws IOException If a network error occurs, the API returns an error, or authentication fails.
+     * @throws IllegalStateException If the client was constructed with a pre-configured token, as authentication is already handled.
      */
     public void authenticate(String username, String password) throws IOException {
+        if (this.preConfiguredAuthToken != null) {
+            throw new IllegalStateException("Client is already configured with an authentication token. Manual authentication is not required.");
+        }
         Objects.requireNonNull(username, "Username cannot be null");
         Objects.requireNonNull(password, "Password cannot be null");
 
@@ -67,20 +96,20 @@ public class ZabbixApiSyncClient {
         Objects.requireNonNull(method, "Zabbix API method cannot be null");
         Objects.requireNonNull(params, "Zabbix API params cannot be null");
 
-        ObjectMapper localMapper = new ObjectMapper(); // For constructing the request body
-        ObjectNode requestBody = localMapper.createObjectNode();
+        com.fasterxml.jackson.databind.node.ObjectNode requestBody = objectMapper.createObjectNode();
         requestBody.put("jsonrpc", "2.0");
         requestBody.put("method", method);
-        requestBody.set("params", localMapper.valueToTree(params));
-        requestBody.put("id", 1); // Request ID, can be any integer or string
+        requestBody.set("params", objectMapper.valueToTree(params)); // Use existing objectMapper
+        requestBody.put("id", System.currentTimeMillis()); // Use a potentially unique ID
 
+        // authToken is used here, which is set either by authenticate() or by the token-based constructor
         if (this.authToken != null && !method.equals("user.login")) {
             requestBody.put("auth", this.authToken);
         }
 
         RequestBody body = RequestBody.create(
                 requestBody.toString(),
-                MediaType.get("application/json-rpc")
+                MediaType.get("application/json-rpc") // Standard media type
         );
 
         Request request = new Request.Builder()

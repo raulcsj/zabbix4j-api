@@ -18,6 +18,7 @@ import java.util.concurrent.CompletionException;
  * This client uses OkHttp for asynchronous HTTP requests and Jackson for JSON processing.
  * All API calls return a {@link CompletableFuture} that will be completed with the result
  * or completed exceptionally if an error occurs.
+ * This client supports authentication via username/password or by providing a pre-configured authentication token.
  */
 public class ZabbixApiAsyncClient {
 
@@ -25,9 +26,12 @@ public class ZabbixApiAsyncClient {
     private final OkHttpClient httpClient;
     private final ObjectMapper objectMapper;
     private volatile String authToken; // Volatile as it can be set by an async callback
+    private String preConfiguredAuthToken; // Field for pre-configured token
 
     /**
-     * Constructs a new ZabbixApiAsyncClient.
+     * Constructs a new ZabbixApiAsyncClient with the specified API URL.
+     * After construction, {@link #authenticateAsync(String, String)} must be called to obtain an
+     * authentication token before making other API requests.
      *
      * @param apiUrl The URL of the Zabbix API (e.g., "http://your-zabbix-server/api_jsonrpc.php").
      *               Cannot be null.
@@ -37,6 +41,26 @@ public class ZabbixApiAsyncClient {
         this.apiUrl = apiUrl;
         this.httpClient = new OkHttpClient(); // OkHttpClient is designed to be shared
         this.objectMapper = new ObjectMapper();
+        this.preConfiguredAuthToken = null;
+    }
+
+    /**
+     * Constructs a new ZabbixApiAsyncClient with the specified API URL and a pre-configured authentication token.
+     * Using this constructor, the client is immediately ready to make authenticated API requests.
+     * Calling {@link #authenticateAsync(String, String)} on a client constructed this way will result in the
+     * returned {@link CompletableFuture} completing exceptionally with an {@link IllegalStateException}.
+     *
+     * @param apiUrl The URL of the Zabbix API (e.g., "http://your-zabbix-server/api_jsonrpc.php"). Cannot be null.
+     * @param token The pre-configured Zabbix authentication token. Cannot be null or empty.
+     */
+    public ZabbixApiAsyncClient(String apiUrl, String token) {
+        Objects.requireNonNull(apiUrl, "API URL cannot be null");
+        Objects.requireNonNull(token, "Authentication token cannot be null");
+        this.apiUrl = apiUrl;
+        this.httpClient = new OkHttpClient();
+        this.objectMapper = new ObjectMapper();
+        this.preConfiguredAuthToken = token;
+        this.authToken = token; // Use the pre-configured token directly
     }
 
     /**
@@ -46,10 +70,17 @@ public class ZabbixApiAsyncClient {
      * @param username The Zabbix username. Cannot be null.
      * @param password The Zabbix password. Cannot be null.
      * @return A {@link CompletableFuture} that will be completed with the authentication token (a String)
-     *         upon successful authentication. The future will be completed exceptionally if authentication fails,
-     *         a network error occurs, or the API returns an error.
+     *         upon successful authentication.
+     *         The future will be completed exceptionally if authentication fails, a network error occurs,
+     *         the API returns an error, or if the client was constructed with a pre-configured token
+     *         (in which case it completes exceptionally with an {@link IllegalStateException}).
      */
     public CompletableFuture<String> authenticateAsync(String username, String password) {
+        if (this.preConfiguredAuthToken != null) {
+            CompletableFuture<String> future = new CompletableFuture<>();
+            future.completeExceptionally(new IllegalStateException("Client is already configured with an authentication token. Manual authentication is not required."));
+            return future;
+        }
         Objects.requireNonNull(username, "Username cannot be null");
         Objects.requireNonNull(password, "Password cannot be null");
 
@@ -161,13 +192,14 @@ public class ZabbixApiAsyncClient {
 
         CompletableFuture<JsonNode> future = new CompletableFuture<>();
 
-        ObjectMapper localMapper = new ObjectMapper();
-        ObjectNode requestBody = localMapper.createObjectNode();
+        // Use the class-level objectMapper
+        ObjectNode requestBody = objectMapper.createObjectNode();
         requestBody.put("jsonrpc", "2.0");
         requestBody.put("method", method);
-        requestBody.set("params", localMapper.valueToTree(params));
-        requestBody.put("id", System.currentTimeMillis());
+        requestBody.set("params", objectMapper.valueToTree(params));
+        requestBody.put("id", System.currentTimeMillis()); // ID is already dynamic
 
+        // authToken is used here, which is set either by authenticateAsync() or by the token-based constructor
         String currentAuthToken = this.authToken;
         if (currentAuthToken != null && !method.equals("user.login")) {
             requestBody.put("auth", currentAuthToken);

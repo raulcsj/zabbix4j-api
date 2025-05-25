@@ -54,7 +54,20 @@ public class ZabbixApiAsyncClientTest {
         }
 
         // Standard mock behavior for httpClient.newCall()
-        when(mockHttpClient.newCall(any(Request.class))).thenReturn(mockCall);
+    // This will be called for each test that initializes the client in setUp.
+    // For tests that create their own client instance (token-based), they'll need their own mock setup if client is not injected.
+    // The reflection injects into the 'client' field instance.
+    lenient().when(mockHttpClient.newCall(any(Request.class))).thenReturn(mockCall);
+}
+
+private void injectMockHttpClient(ZabbixApiAsyncClient clientInstance) {
+    try {
+        java.lang.reflect.Field httpClientField = ZabbixApiAsyncClient.class.getDeclaredField("httpClient");
+        httpClientField.setAccessible(true);
+        httpClientField.set(clientInstance, mockHttpClient);
+    } catch (NoSuchFieldException | IllegalAccessException e) {
+        throw new RuntimeException("Failed to inject mock OkHttpClient into ZabbixApiAsyncClient", e);
+    }
     }
 
     private void mockCallbackSuccess(String jsonResponse) {
@@ -363,5 +376,83 @@ public class ZabbixApiAsyncClientTest {
         assertTrue(ex.getCause() instanceof IllegalStateException);
         assertEquals("Client is not authenticated. Call authenticateAsync() first.", ex.getCause().getMessage());
         verify(mockHttpClient, never()).newCall(any());
+    }
+
+    // --- Token-based Authentication Tests ---
+
+    @Test
+    void apiCallWithPreConfiguredToken_successAsync() throws Exception {
+        String testToken = "preConfiguredAsyncToken456";
+        ZabbixApiAsyncClient tokenClient = new ZabbixApiAsyncClient(TEST_API_URL, testToken);
+        // We need a new OkHttpClient mock instance for this specific client or re-use the class-level one carefully.
+        // For simplicity, let's assume we can inject/re-target the existing mockHttpClient.
+        injectMockHttpClient(tokenClient); // Inject mock into the new client instance
+
+        String hostName = "AsyncTokenHost";
+        String hostId = "asyncT101";
+        String hostResponseJson = "{\"jsonrpc\":\"2.0\",\"result\":[{\"hostid\":\"" + hostId + "\",\"host\":\"" + hostName + "\"}],\"id\":1}";
+
+        // Mock the callback for the getHostAsync call
+        doAnswer(invocation -> {
+            Callback callback = invocation.getArgument(0, Callback.class);
+            // Verify the request body for the token
+            Request capturedRequest = requestCaptor.getValue(); // Capture from mockHttpClient.newCall
+            okio.Buffer buffer = new okio.Buffer();
+            assertNotNull(capturedRequest.body());
+            capturedRequest.body().writeTo(buffer);
+            String requestBodyString = buffer.readUtf8();
+            JsonNode requestJsonNode = objectMapper.readTree(requestBodyString);
+
+            assertEquals("host.get", requestJsonNode.get("method").asText());
+            assertEquals(testToken, requestJsonNode.get("auth").asText()); // Key verification
+            assertEquals(hostName, requestJsonNode.get("params").get("filter").get("host").asText());
+            
+            // Simulate successful response
+            Response mockHttpResponse = successfulResponseMock(hostResponseJson);
+            callback.onResponse(mockCall, mockHttpResponse);
+            return null;
+        }).when(mockCall).enqueue(any(Callback.class));
+
+        // This will trigger the actual mockHttpClient.newCall, need to capture request there.
+        // The actual newCall is on the mockHttpClient instance associated with 'tokenClient'.
+        // The requestCaptor is on 'this.mockHttpClient'. So, ensure they are the same.
+        when(this.mockHttpClient.newCall(requestCaptor.capture())).thenReturn(mockCall);
+
+
+        CompletableFuture<JsonNode> hostFuture = tokenClient.getHostAsync(hostName);
+        JsonNode hostNode = hostFuture.get(5, TimeUnit.SECONDS);
+
+        assertNotNull(hostNode);
+        assertEquals(hostName, hostNode.get("host").asText());
+        assertEquals(hostId, hostNode.get("hostid").asText());
+
+        verify(this.mockHttpClient, times(1)).newCall(any(Request.class)); // Only one call for getHost
+        verify(mockCall, times(1)).enqueue(any(Callback.class));
+    }
+
+    @Test
+    void authenticateAsync_completesExceptionally_whenTokenPreConfigured() {
+        String testToken = "anotherAsyncToken789";
+        ZabbixApiAsyncClient tokenClient = new ZabbixApiAsyncClient(TEST_API_URL, testToken);
+        // No HTTP call expected, so no need to inject mockHttpClient or mock calls for it.
+
+        CompletableFuture<String> authFuture = tokenClient.authenticateAsync("user", "pass");
+
+        ExecutionException exception = assertThrows(ExecutionException.class,
+                () -> authFuture.get(5, TimeUnit.SECONDS));
+
+        Throwable cause = exception.getCause();
+        assertTrue(cause instanceof IllegalStateException);
+        assertEquals("Client is already configured with an authentication token. Manual authentication is not required.", cause.getMessage());
+        
+        // Verify that no interactions happened with the class-level mockHttpClient
+        // if tokenClient created its own (which it does, but we mock it for other tests).
+        // If tokenClient was using the class-level mock, then verifyNoInteractions(this.mockHttpClient)
+        // For this test, it's safer to assume it might have its own, and the important part is the exception.
+        // If we are sure 'tokenClient' does not use 'this.mockHttpClient' unless injected, then this is fine.
+        // Given our injectMockHttpClient, if we *don't* call it on tokenClient, its internal httpClient is real.
+        // If we *do* call it, then we can verifyNoInteractions on the mock.
+        // Let's assume we don't inject for this specific test, as no HTTP interaction should occur.
+        // verifyNoInteractions(this.mockHttpClient); // This would be for the class field client, not tokenClient's own.
     }
 }

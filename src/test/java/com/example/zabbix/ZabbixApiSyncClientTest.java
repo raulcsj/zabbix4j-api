@@ -83,14 +83,20 @@ public class ZabbixApiSyncClientTest {
         //    Let's proceed as if `client.httpClient` can be replaced or was injected.
         //    (This is a common challenge with testing code that directly instantiates collaborators)
 
-        // Re-initialize client with a version where httpClient can be mocked (conceptual)
-        // This is a placeholder for actual DI or testable design
+    // Client for username/password tests will be initialized in specific test methods or setUp if needed differently.
+    // For token-based tests, client will be initialized with token constructor.
+    // For default tests, initialize with standard constructor and inject mock.
+    // To avoid NPEs in @AfterEach or other places, client can be initialized here with a default.
         client = new ZabbixApiSyncClient(TEST_API_URL);
-        // Using reflection to set the mock client for the purpose of this test
+    injectMockHttpClient(client);
+
+}
+
+private void injectMockHttpClient(ZabbixApiSyncClient clientInstance) {
         try {
             java.lang.reflect.Field httpClientField = ZabbixApiSyncClient.class.getDeclaredField("httpClient");
             httpClientField.setAccessible(true);
-            httpClientField.set(client, mockHttpClient);
+        httpClientField.set(clientInstance, mockHttpClient);
         } catch (NoSuchFieldException | IllegalAccessException e) {
             throw new RuntimeException("Failed to inject mock OkHttpClient", e);
         }
@@ -154,13 +160,17 @@ public class ZabbixApiSyncClientTest {
         RequestBody actualBody = capturedRequest.body();
         assertNotNull(actualBody);
         assertTrue(actualBody.contentType().toString().startsWith("application/json-rpc"));
-        // This part is tricky. OkHttp's RequestBody doesn't easily give back the string.
-        // We'd typically use a WireMock or similar to verify actual HTTP traffic.
-        // For unit tests, we often trust the request construction if the parameters passed to it are correct.
 
-        // Let's try to capture and verify the params for user.login
-        // This assumes `postRequest` is called by `authenticate`.
-        // The current structure calls `postRequest` internally.
+        // Extract body to verify method and params
+        okio.Buffer buffer = new okio.Buffer();
+        actualBody.writeTo(buffer);
+        String requestBodyString = buffer.readUtf8();
+        JsonNode requestJsonNode = objectMapper.readTree(requestBodyString);
+
+        assertEquals("user.login", requestJsonNode.get("method").asText());
+        assertEquals("user", requestJsonNode.get("params").get("user").asText());
+        assertEquals("pass", requestJsonNode.get("params").get("password").asText());
+        assertFalse(requestJsonNode.has("auth")); // No auth token for login request itself
     }
     
     @Test
@@ -339,5 +349,51 @@ public class ZabbixApiSyncClientTest {
     void getItem_notAuthenticated() {
         IllegalStateException exception = assertThrows(IllegalStateException.class, () -> client.getItem("any.item", "any.host"));
         assertEquals("Client is not authenticated. Call authenticate() first.", exception.getMessage());
+    }
+
+    // --- Token-based Authentication Tests ---
+
+    @Test
+    void apiCallWithPreConfiguredToken_success() throws IOException {
+        String testToken = "preConfiguredTestToken123";
+        client = new ZabbixApiSyncClient(TEST_API_URL, testToken);
+        injectMockHttpClient(client); // Inject mock after new client instance
+
+        String hostName = "TokenHost";
+        String hostResponseJson = "{\"jsonrpc\":\"2.0\",\"result\":[{\"hostid\":\"10099\",\"host\":\"" + hostName + "\"}],\"id\":1}";
+        mockSuccessfulResponse(hostResponseJson);
+
+        JsonNode host = client.getHost(hostName);
+
+        assertNotNull(host);
+        assertEquals(hostName, host.get("host").asText());
+
+        verify(mockHttpClient).newCall(requestCaptor.capture()); // Should be called only once for host.get
+        Request capturedRequest = requestCaptor.getValue();
+
+        // Verify request body for host.get and presence of the pre-configured token
+        okio.Buffer buffer = new okio.Buffer();
+        Objects.requireNonNull(capturedRequest.body()).writeTo(buffer);
+        String requestBodyString = buffer.readUtf8();
+        JsonNode requestJsonNode = objectMapper.readTree(requestBodyString);
+
+        assertEquals("host.get", requestJsonNode.get("method").asText());
+        assertEquals(testToken, requestJsonNode.get("auth").asText()); // Crucial check
+        assertEquals(hostName, requestJsonNode.get("params").get("filter").get("host").asText());
+
+        verify(mockCall, times(1)).execute(); // Ensure only one HTTP call was made
+    }
+
+    @Test
+    void authenticate_throwsException_whenTokenPreConfigured() {
+        String testToken = "anotherTestToken";
+        client = new ZabbixApiSyncClient(TEST_API_URL, testToken);
+        // No need to inject mockHttpClient as authenticate should fail before any HTTP call
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> client.authenticate("user", "pass"));
+
+        assertEquals("Client is already configured with an authentication token. Manual authentication is not required.", exception.getMessage());
+        verifyNoInteractions(mockHttpClient); // Ensure no HTTP call was attempted
     }
 }

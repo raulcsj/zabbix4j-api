@@ -621,4 +621,4 @@ A: 支持Zabbix 5.0.x, 6.0.x, 7.0.x,
 
 ## 许可证
 
-Apache License
+MIT License
